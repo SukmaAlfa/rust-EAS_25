@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoring Dashboard Final</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+</head>
+<body>
+    <div class="dashboard-layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="header-icon">🛰️</span> 
+                <h2>Monitoring</h2>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-button active" data-target="realtime">Real-Time</button>
+                <button class="nav-button" data-target="grafik">Grafik</button>
+                <button class="nav-button" data-target="history">History</button>
+                <button class="nav-button" data-target="pemodelan-kelembaban">Newton-Raphson</button> 
+            </nav>
+            <div class="sidebar-footer">
+                <button id="reset-dashboard-button" class="reset-button">Reset Data</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <div id="realtime" class="content-page active">
+                <h1>Data Real-Time</h1>
+                <div class="status-card success">
+                    <p class="status-label"><span class="status-dot"></span> Status Koneksi</p>
+                    <h2 id="status-text" class="status-text">Menunggu</h2>
+                    <p id="data-value" class="data-value">Kelembaban (Sensor)</p>
+                    <p id="timestamp" class="timestamp">Terakhir diperbarui: -</p>
+                </div>
+                <div class="summary-cards-container">
+                    <div class="summary-card"><h3 id="summary-min" class="summary-value">-</h3><p class="summary-label">Minimum</p></div>
+                    <div class="summary-card"><h3 id="summary-max" class="summary-value">-</h3><p class="summary-label">Maksimum</p></div>
+                    <div class="summary-card"><h3 id="summary-avg" class="summary-value">-</h3><p class="summary-label">Rata-rata</p></div>
+                </div>
+                <div class="action-buttons">
+                    </div>
+                <div id="error-banner" class="error-banner" style="display: none;"></div>
+            </div>
+
+            <div id="grafik" class="content-page">
+                <h1>Visualisasi Grafik</h1>
+                <div class="chart-toggle-buttons">
+                    <button class="toggle-button active" data-chart="realtime-chart-container">Grafik Real-time</button>
+                    </div>
+                <div id="realtime-chart-container" class="chart-wrapper active">
+                    <div class="chart-controls"><button id="reset-chart-button" class="action-btn small">Reset Grafik Sensor</button></div>
+                    <div class="chart-container"><canvas id="realtimeChart"></canvas></div>
+                </div>
+                </div>
+
+            <div id="history" class="content-page">
+                <h1>History Log</h1>
+                <div class="table-container">
+                    <table>
+                        <thead><tr><th>ID</th><th>Timestamp</th><th>Tipe</th><th>Keterangan</th></tr></thead>
+                        <tbody id="history-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="pemodelan-kelembaban" class="content-page">
+                <h1>Kelembaban Tanah Newton-Raphson</h1>
+                <div class="suhu-controls-container">
+                    <div class="input-group">
+                        <label for="input-target-humidity">Target Kelembaban (%):</label>
+                        <input type="number" id="input-target-humidity" value="50">
+                    </div>
+                    <div class="input-group">
+                        <label for="max-iterasi-pemodelan">Max Iterasi:</label>
+                        <input type="number" id="max-iterasi-pemodelan" value="1000">
+                    </div>
+                    <button id="hitung-kelembaban-btn" class="action-btn">Hitung Nilai Sensor</button>
+                </div>
+
+                <div class="suhu-results-container">
+                    <p>Newton-Raphson (Nilai Sensor): <strong id="nr-sensor-result">-</strong></p>
+                    <p>Model Langsung (Nilai Sensor): <strong id="direct-model-result">-</strong></p>
+                    <p>Error (NR vs Model Langsung): <strong id="error-nr-direct">-</strong></p>
+
+                    <div class="iterasi-log">
+                        <h4>Lihat Iterasi Newton-Raphson</h4>
+                        <ul id="nr-iterasi-list-pemodelan"></ul>
+                    </div>
+                </div>
+
+                <div class="chart-container" style="height: 400px; margin-top: 24px;">
+                    <canvas id="kelembabanChart"></canvas>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Referensi Elemen DOM
+        const navButtons = document.querySelectorAll('.nav-button');
+        const contentPages = document.querySelectorAll('.content-page');
+        const statusCard = document.querySelector('.status-card');
+        const statusText = document.getElementById('status-text');
+        const dataValueText = document.getElementById('data-value');
+        const timestampText = document.getElementById('timestamp');
+        const summaryMinValue = document.getElementById('summary-min');
+        const summaryMaxValue = document.getElementById('summary-max');
+        const summaryAvgValue = document.getElementById('summary-avg');
+        const errorBanner = document.getElementById('error-banner');
+        const resetChartBtn = document.getElementById('reset-chart-button');
+        const realtimeChartCtx = document.getElementById('realtimeChart').getContext('2d');
+        const historyTableBody = document.getElementById('history-table-body');
+        const resetDashboardBtn = document.getElementById('reset-dashboard-button');
+        
+        let sensorDataForCalc = [];
+
+        // =====================================================================
+        // KONEKSI KE BACKEND (FULL-STACK)
+        // =====================================================================
+        async function saveLogToServer(logData) {
+            try {
+                const response = await fetch('/api/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(logData)
+                });
+                if (!response.ok) throw new Error(`Server error: ${await response.text()}`);
+                console.log('Log berhasil disimpan');
+                errorBanner.style.display = 'none';
+                statusCard.classList.remove('error');
+                statusCard.classList.add('success');
+                statusText.textContent = 'Terhubung';
+            } catch (error) {
+                console.error("Gagal mengirim log ke server:", error);
+                errorBanner.textContent = 'Koneksi ke server backend gagal.';
+                errorBanner.style.display = 'block';
+                statusCard.classList.remove('success');
+                statusCard.classList.add('error');
+                statusText.textContent = 'Offline';
+            }
+        }
+
+        async function fetchAndRenderHistory() {
+            try {
+                const response = await fetch('/api/logs');
+                if (!response.ok) throw new Error('Gagal mengambil logs');
+                const logs = await response.json();
+                historyTableBody.innerHTML = '';
+                logs.forEach(log => {
+                    const row = document.createElement('tr');
+                    const displayId = (log._id && log._id.$oid) ? log._id.$oid.slice(-6).toUpperCase() : 'N/A';
+                    row.innerHTML = `<td>${displayId}</td><td>${log.timestamp}</td><td>${log.type}</td><td>${log.description}</td>`;
+                    historyTableBody.appendChild(row);
+                });
+            } catch (error) {
+                console.error("Gagal merender history dari server:", error);
+            }
+        }
+        
+        // =====================================================================
+        // FUNGSI-FUNGSI UTAMA (Real-Time Sensor & Chart)
+        // =====================================================================
+        const realtimeChart = new Chart(realtimeChartCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Sensor (Kelembaban)', data: [], borderColor: 'var(--success-color)', backgroundColor: 'rgba(0, 191, 255, 0.1)', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, }] },
+            options: { maintainAspectRatio: false, scales: { y: { beginAtZero: false, grid: { color: 'rgba(255, 255, 255, 0.1)' }, ticks: { color: 'var(--text-secondary)' } }, x: { grid: { display: false }, ticks: { color: 'var(--text-secondary)' } } }, plugins: { legend: { display: false } } }
+        });
+
+        function updateUiWithNewSensorValue(newValue) {
+            const now = new Date();
+            dataValueText.textContent = `${newValue.toFixed(1)} %`;
+            timestampText.textContent = `Terakhir diperbarui: ${now.toLocaleTimeString('id-ID')}`;
+            sensorDataForCalc.push(newValue);
+            if(sensorDataForCalc.length > 100) sensorDataForCalc.shift();
+            const min = Math.min(...sensorDataForCalc);
+            const max = Math.max(...sensorDataForCalc);
+            const avg = sensorDataForCalc.reduce((a, b) => a + b, 0) / sensorDataForCalc.length;
+            summaryMinValue.textContent = min.toFixed(1);
+            summaryMaxValue.textContent = max.toFixed(1);
+            summaryAvgValue.textContent = avg.toFixed(1);
+            if (realtimeChart.data.labels.length > 30) {
+                realtimeChart.data.labels.shift();
+                realtimeChart.data.datasets[0].data.shift();
+            }
+            realtimeChart.data.labels.push(now.toLocaleTimeString('id-ID'));
+            realtimeChart.data.datasets[0].data.push(newValue);
+            realtimeChart.update('quiet');
+        }
+
+        function resetRealtimeChart() { realtimeChart.data.labels = []; realtimeChart.data.datasets[0].data = []; realtimeChart.update(); }
+
+        function resetDashboard() {
+            sensorDataForCalc = [];
+            resetRealtimeChart();
+            summaryMinValue.textContent = '-'; summaryMaxValue.textContent = '-'; summaryAvgValue.textContent = '-';
+            dataValueText.textContent = 'Kelembaban (Sensor)'; statusText.textContent = 'Menunggu Data';
+            // initNewtonRaphson(false); // Dihapus karena NR utama sudah tidak ada di grafik
+            initKelembabanChart(); // Reset chart pemodelan kelembaban
+            saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Reset', description: 'Dashboard Direset' })
+                .then(() => fetchAndRenderHistory());
+        }
+        
+        // =====================================================================
+        // LOGIKA GRAFIK NEWTON-RAPHSON (fungsi f(x) = x² - 2) - DIHAPUS DARI HALAMAN INI
+        // =====================================================================
+        // Kode terkait NR (f(x)=x^2-2) di halaman 'Grafik' dihapus.
+        // Variabel dan fungsi berikut tidak lagi digunakan di sini:
+        /*
+        const nrIterationEl = document.getElementById('nr-iteration');
+        const nrXValueEl = document.getElementById('nr-x-value');
+        const nrNextStepBtn = document.getElementById('nr-next-step-button');
+        const nrResetBtn = document.getElementById('nr-reset-button');
+        const nrChartCtx = document.getElementById('newtonRaphsonChart').getContext('2d');
+        const f = x => x * x - 2;
+        const f_prime = x => 2 * x;
+        let nr_current_x, nr_iteration_count;
+        const initial_guess = 3.0;
+
+        const newtonRaphsonChart = new Chart(nrChartCtx, {
+            type: 'scatter', data: { labels: [], datasets: [{ label: 'f(x) = x² - 2', data: [], type: 'line', showLine: true, borderColor: 'rgba(255, 255, 255, 0.5)', borderWidth: 1, pointRadius: 0, }, { label: 'Iterasi', data: [], backgroundColor: 'var(--success-color)', pointRadius: 5, }] },
+            options: { maintainAspectRatio: false, scales: { y: { grid: { color: 'rgba(255, 255, 255, 0.1)' }, ticks: { color: 'var(--text-secondary)' } }, x: { grid: { color: 'rgba(255, 255, 255, 0.1)' }, ticks: { color: 'var(--text-secondary)' } } }, plugins: { legend: { labels: { color: 'var(--text-secondary)' } } } }
+        });
+        
+        function initNewtonRaphson(logToServer = true) {
+            nr_iteration_count = 0; nr_current_x = initial_guess;
+            nrIterationEl.textContent = nr_iteration_count; nrXValueEl.textContent = nr_current_x.toFixed(6);
+            const functionData = [];
+            for (let x = -4; x <= 4; x += 0.1) functionData.push({ x: x, y: f(x) });
+            newtonRaphsonChart.data.datasets[0].data = functionData;
+            newtonRaphsonChart.data.datasets[1].data = [{x: nr_current_x, y: f(nr_current_x)}];
+            newtonRaphsonChart.update();
+            if(logToServer) {
+                saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Reset', description: `NR Reset ke x = ${initial_guess.toFixed(1)}` });
+            }
+        }
+
+        function performNewtonRaphsonStep() {
+            if (f_prime(nr_current_x) === 0) { alert("Turunan adalah nol."); return; }
+            nr_current_x -= f(nr_current_x) / f_prime(nr_current_x);
+            nr_iteration_count++;
+            nrIterationEl.textContent = nr_iteration_count;
+            nrXValueEl.textContent = nr_current_x.toFixed(6);
+            newtonRaphsonChart.data.datasets[1].data.push({ x: nr_current_x, y: f(nr_current_x) });
+            newtonRaphsonChart.update();
+            saveLogToServer({ timestamp: new Date().toLocaleString('id-ID'), type: 'Newton-Raphson', description: `NR Iterasi ${nr_iteration_count}: x = ${nr_current_x.toFixed(4)}` });
+        }
+        */
+
+    // =====================================================================
+    // LOGIKA PEMODELAN KELEMBABAN TANAH (Newton-Raphson & Model Langsung)
+    // =====================================================================
+
+    // Referensi Elemen DOM untuk Pemodelan Kelembaban
+    const inputTargetHumidity = document.getElementById('input-target-humidity');
+    const maxIterasiPemodelan = document.getElementById('max-iterasi-pemodelan'); 
+    const hitungKelembabanBtn = document.getElementById('hitung-kelembaban-btn');
+    const nrSensorResult = document.getElementById('nr-sensor-result');
+    const directModelResult = document.getElementById('direct-model-result');
+    const errorNrDirect = document.getElementById('error-nr-direct');
+    const nrIterasiListPemodelan = document.getElementById('nr-iterasi-list-pemodelan'); 
+    const kelembabanChartCtx = document.getElementById('kelembabanChart').getContext('2d');
+
+    let kelembabanChart;
+
+    // Fungsi untuk inisialisasi atau mereset grafik kelembaban
+    function initKelembabanChart() {
+        if (kelembabanChart) {
+            kelembabanChart.destroy();
+        }
+        kelembabanChart = new Chart(kelembabanChartCtx, {
+            type: 'line',
+            data: {
+                labels: [], 
+                datasets: [
+                    {
+                        label: 'Newton-Raphson (Nilai Sensor)',
+                        data: [],
+                        borderColor: 'var(--accent-color)', 
+                        backgroundColor: 'rgba(52, 152, 219, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        tension: 0.3,
+                        fill: false,
+                    },
+                    {
+                        label: 'Model Langsung (Nilai Sensor)',
+                        data: [],
+                        borderColor: 'var(--success-color)', 
+                        backgroundColor: 'rgba(46, 204, 113, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        tension: 0.3,
+                        fill: false,
+                    }
+                ]
+            },
+            options: {
+                maintainAspectRatio: false,
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true, 
+                        title: {
+                            display: true,
+                            text: 'Nilai Sensor',
+                            color: 'var(--text-secondary)'
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: 'var(--text-secondary)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Iterasi',
+                            color: 'var(--text-secondary)'
+                        },
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            color: 'var(--text-secondary)'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: 'var(--text-secondary)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // --- Model Kelembaban Tanah Sederhana (Contoh yang Disesuaikan) ---
+    // H = A * V_sensor^2 + B * V_sensor + C
+    // Di mana H adalah persentase kelembaban (0-100) dan V_sensor adalah nilai sensor (0-1023)
+    // Konstanta kalibrasi contoh yang lebih stabil (Anda perlu menyesuaikan ini dengan kalibrasi sensor Anda)
+    // Dibuat agar f(V_sensor) = 0 memiliki solusi yang wajar di [0, 1023] untuk H di [0, 100]
+    const A_cal = -0.0001; 
+    const B_cal = 0.15;    
+    const C_cal = 10.0;    
+
+    // Fungsi f(V_sensor) untuk Newton-Raphson: f(V_sensor) = (A*V^2 + B*V + C) - Target_H
+    function f_kelembaban(V_sensor_guess, target_H) {
+        return (A_cal * V_sensor_guess * V_sensor_guess) + (B_cal * V_sensor_guess) + C_cal - target_H;
+    }
+
+    // Turunan f'(V_sensor)
+    function f_prime_kelembaban(V_sensor_guess) {
+        return (2 * A_cal * V_sensor_guess) + B_cal;
+    }
+
+    // Fungsi untuk menghitung nilai sensor langsung dari kelembaban target (menggunakan rumus kuadrat)
+    function calculateDirectSensorValue(target_H) {
+        // Kita ingin menyelesaikan A*V^2 + B*V + (C - target_H) = 0 untuk V
+        // Menggunakan rumus kuadrat: V = (-B +- sqrt(B^2 - 4A(C-target_H))) / 2A
+        const K = C_cal - target_H;
+        const discriminant = (B_cal * B_cal) - (4 * A_cal * K);
+
+        if (discriminant < 0) {
+            console.warn("Direct model: Diskriminan negatif, tidak ada solusi riil untuk target kelembaban ini.");
+            return NaN;
+        }
+
+        const sqrt_discriminant = Math.sqrt(discriminant);
+        const v1 = (-B_cal + sqrt_discriminant) / (2 * A_cal);
+        const v2 = (-B_cal - sqrt_discriminant) / (2 * A_cal);
+
+        // Pilih nilai sensor yang paling masuk akal (misal, dalam rentang 0-1023 dan umumnya positif)
+        // Asumsi nilai sensor valid adalah antara 0 dan 1023 (untuk ADC 10-bit)
+        const MIN_SENSOR_VAL = 0;
+        const MAX_SENSOR_VAL = 1023;
+
+        let valid_solutions = [];
+        if (v1 >= MIN_SENSOR_VAL && v1 <= MAX_SENSOR_VAL) {
+            valid_solutions.push(v1);
+        }
+        if (v2 >= MIN_SENSOR_VAL && v2 <= MAX_SENSOR_VAL) {
+            valid_solutions.push(v2);
+        }
+
+        if (valid_solutions.length === 1) {
+            return valid_solutions[0];
+        } else if (valid_solutions.length > 1) {
+            // Jika ada dua solusi valid, pilih salah satu yang lebih masuk akal.
+            // Untuk sensor yang nilai ADC meningkat saat kering (kelembaban turun),
+            // dan model parabola terbalik (A_cal negatif), nilai sensor yang lebih tinggi
+            // berarti kelembaban lebih rendah. Jadi, kita bisa pilih salah satu yang paling cocok.
+            // Untuk sederhana, ambil salah satu saja.
+            if (A_cal < 0) { 
+                return Math.max(v1, v2);
+            } else { 
+                return Math.min(v1, v2);
+            }
+        } else {
+            console.warn("Direct model: Solusi berada di luar rentang sensor valid [0-1023].");
+            return NaN;
+        }
+    }
+
+    // Fungsi utama perhitungan kelembaban
+    async function performKelembabanCalculation() { 
+        initKelembabanChart(); 
+
+        const targetHumidity = parseFloat(inputTargetHumidity.value);
+        const maxIter = parseInt(maxIterasiPemodelan.value); 
+
+        if (isNaN(targetHumidity) || targetHumidity < 0 || targetHumidity > 100) {
+            alert('Masukkan target kelembaban yang valid (0-100%).');
+            return;
+        }
+        if (isNaN(maxIter) || maxIter <= 0) {
+            alert('Masukkan jumlah iterasi maksimum yang valid (angka positif).');
+            return;
+        }
+
+        nrIterasiListPemodelan.innerHTML = ''; 
+
+        // --- Perhitungan Model Langsung ---
+        const direct_model_v_sensor = calculateDirectSensorValue(targetHumidity);
+        directModelResult.textContent = isNaN(direct_model_v_sensor) ? 'Tidak Ditemukan' : direct_model_v_sensor.toFixed(4);
+
+        // --- Perhitungan Newton-Raphson ---
+        let nr_v_sensor_guess = 500; // TEBAKAN AWAL DEFAULT. JANGAN SET SAMA DENGAN direct_model_v_sensor!
+        
+        let nr_iteration = 0;
+        let prev_v_sensor_guess;
+
+        // Data untuk grafik
+        const nrChartData = [];
+        const directChartData = []; 
+
+        // Tambahkan tebakan awal ke grafik NR
+        nrChartData.push({ x: nr_iteration, y: nr_v_sensor_guess.toFixed(4) });
+        
+        // Data Model Langsung ditambahkan hanya sekali (sebagai garis lurus)
+        // Jika model langsung valid, tambahkan ke grafik
+        if (!isNaN(direct_model_v_sensor)) {
+            for (let i = 0; i <= maxIter + 1; i++) { 
+                directChartData.push({ x: i, y: direct_model_v_sensor.toFixed(4) });
+            }
+        }
+
+
+        nrIterasiListPemodelan.innerHTML += `<li>Iterasi ${nr_iteration}: ${nr_v_sensor_guess.toFixed(4)} (Tebakan Awal)</li>`;
+
+        for (nr_iteration = 1; nr_iteration <= maxIter; nr_iteration++) {
+            prev_v_sensor_guess = nr_v_sensor_guess;
+            const fx = f_kelembaban(nr_v_sensor_guess, targetHumidity);
+            const f_prime_x = f_prime_kelembaban(nr_v_sensor_guess);
+
+            if (f_prime_x === 0) {
+                console.warn('Turunan nol, Newton-Raphson tidak dapat dilanjutkan.');
+                nrIterasiListPemodelan.innerHTML += `<li style="color: red;">Iterasi ${nr_iteration}: Turunan nol, berhenti.</li>`;
+                break;
+            }
+
+            nr_v_sensor_guess -= fx / f_prime_x;
+
+            const current_nr_v_sensor = nr_v_sensor_guess;
+            nrChartData.push({ x: nr_iteration, y: current_nr_v_sensor.toFixed(4) });
+
+            nrIterasiListPemodelan.innerHTML += `<li>Iterasi ${nr_iteration}: ${current_nr_v_sensor.toFixed(4)}</li>`;
+
+            // Kondisi konvergensi: jika perubahan sangat kecil
+            if (Math.abs(current_nr_v_sensor - prev_v_sensor_guess) < 1e-4) { 
+                nrIterasiListPemodelan.innerHTML += `<li style="font-weight: bold;">Konvergen setelah ${nr_iteration} iterasi.</li>`;
+                break;
+            }
+        }
+
+        const final_nr_v_sensor = nr_v_sensor_guess;
+        nrSensorResult.textContent = final_nr_v_sensor.toFixed(4);
+
+        // --- Perbandingan Error ---
+        let error = NaN;
+        if (!isNaN(direct_model_v_sensor)) {
+            error = Math.abs(final_nr_v_sensor - direct_model_v_sensor);
+            errorNrDirect.textContent = error.toFixed(7); 
+        } else {
+            errorNrDirect.textContent = 'N/A (Model Langsung Tidak Ditemukan)';
+        }
+
+        // Perbarui grafik
+        kelembabanChart.data.labels = nrChartData.map((_, i) => `Iterasi ${i}`); 
+        kelembabanChart.data.datasets[0].data = nrChartData.map(d => d.y);
+        kelembabanChart.data.datasets[1].data = directChartData.map(d => d.y);
+        kelembabanChart.update();
+
+        // Simpan log perhitungan kelembaban ke server
+        saveLogToServer({
+            timestamp: new Date().toLocaleString('id-ID'),
+            type: 'Kelembaban-Hitung',
+            description: `Target H=${targetHumidity}%, NR_Val=${final_nr_v_sensor.toFixed(2)}, Direct_Val=${isNaN(direct_model_v_sensor) ? 'N/A' : direct_model_v_sensor.toFixed(2)}, Error=${isNaN(error) ? 'N/A' : error.toFixed(4)}`
+        });
+    }
+
+    // Event Listener untuk tombol "Hitung Kelembaban"
+    hitungKelembabanBtn.addEventListener('click', performKelembabanCalculation);
+
+
+        // =====================================================================
+        // INISIALISASI WEBSOCKET & Event Listeners Umum
+        // =====================================================================
+        let ws;
+        function connectWebSocket() {
+            ws = new WebSocket('ws://127.0.0.1:8080/ws');
+
+            ws.onopen = () => {
+                console.log('WebSocket connection opened.');
+                errorBanner.style.display = 'none';
+                statusCard.classList.remove('error');
+                statusCard.classList.add('success');
+                statusText.textContent = 'Terhubung (Real-time)';
+            };
+
+            ws.onmessage = (event) => {
+                const rawData = event.data;
+                try {
+                    const moistureValue = parseFloat(rawData);
+                    if (!isNaN(moistureValue)) {
+                        updateUiWithNewSensorValue(moistureValue);
+                        saveLogToServer({
+                            timestamp: new Date().toLocaleString('id-ID'),
+                            type: 'Sensor',
+                            description: `Kelembaban: ${moistureValue.toFixed(2)}%`
+                        });
+                    } else {
+                        console.warn("Received non-numeric data from WebSocket:", rawData);
+                        if (rawData.startsWith("ERROR:")) { 
+                            errorBanner.textContent = rawData;
+                            errorBanner.style.display = 'block';
+                            statusCard.classList.remove('success');
+                            statusCard.classList.add('error');
+                            statusText.textContent = 'Offline (Error Serial)';
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error parsing WebSocket message:", e, "Data:", rawData);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket connection closed. Attempting to reconnect...');
+                errorBanner.textContent = 'Koneksi WebSocket terputus. Mencoba menghubungkan kembali...';
+                errorBanner.style.display = 'block';
+                statusCard.classList.remove('success');
+                statusCard.classList.add('error');
+                statusText.textContent = 'Offline';
+                setTimeout(connectWebSocket, 3000); 
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket Error:', error);
+                errorBanner.textContent = 'Terjadi kesalahan WebSocket.';
+                errorBanner.style.display = 'block';
+                statusCard.classList.remove('success');
+                statusCard.classList.add('error');
+                statusText.textContent = 'Offline';
+                ws.close(); 
+            };
+        }
+
+
+        // Event listeners untuk navigasi sidebar
+        navButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                navButtons.forEach(btn => btn.classList.remove('active')); contentPages.forEach(page => page.classList.remove('active'));
+                button.classList.add('active');
+                const targetId = button.dataset.target;
+                document.getElementById(targetId).classList.add('active');
+                if (targetId === 'history') { fetchAndRenderHistory(); }
+                if (targetId === 'grafik') { 
+                    // NR chart di halaman 'Grafik' dihapus, jadi tidak perlu panggil NR-specific update di sini
+                    // newtonRaphsonChart.update(); 
+                    // Pastikan hanya real-time chart yang diupdate jika itu satu-satunya yang tersisa di halaman 'Grafik'
+                    document.getElementById('realtime-chart-container').classList.add('active');
+                    document.querySelector('.chart-toggle-buttons .toggle-button').classList.add('active');
+                    realtimeChart.update(); 
+                } else if (targetId === 'pemodelan-kelembaban') {
+                    initKelembabanChart(); 
+                }
+            });
+        });
+
+        // Event listeners untuk grafik (di halaman "Grafik")
+        resetChartBtn.addEventListener('click', resetRealtimeChart);
+        // Event listener untuk NR utama di halaman 'Grafik' dihapus
+        /*
+        nrNextStepBtn.addEventListener('click', performNewtonRaphsonStep);
+        nrResetBtn.addEventListener('click', () => initNewtonRaphson(true));
+        const chartToggleButtons = document.querySelectorAll('.chart-toggle-buttons .toggle-button');
+        chartToggleButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                chartToggleButtons.forEach(btn => btn.classList.remove('active')); 
+                document.querySelectorAll('.chart-wrapper').forEach(wrapper => wrapper.classList.remove('active'));
+                button.classList.add('active'); 
+                document.getElementById(button.dataset.chart).classList.add('active');
+                if (button.dataset.chart === 'realtime-chart-container') {
+                    realtimeChart.update();
+                } else if (button.dataset.chart === 'newton-raphson-container') {
+                    newtonRaphsonChart.update();
+                }
+            });
+        });
+        */
+
+        // Event listener untuk tombol reset dashboard
+        resetDashboardBtn.addEventListener('click', resetDashboard);
+
+
+        // INISIALISASI APLIKASI SAAT DOM LENGKAP
+        // initNewtonRaphson(); // Dihapus karena tidak ada lagi chart NR utama
+        initKelembabanChart(); // Inisialisasi grafik Pemodelan Kelembaban
+        connectWebSocket(); // Mulai koneksi WebSocket untuk data real-time
+        fetchAndRenderHistory(); // Ambil dan render history log
+    });
+    </script>
+</body>
+</html>
